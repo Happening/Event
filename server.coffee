@@ -1,56 +1,80 @@
 Db = require 'db'
+Plugin = require 'plugin'
 
-exports.onInstall = ->
-	# set the counter to 0 on plugin installation
-	Db.shared.set 'counter', 0
+exports.getTitle = ->
+	Db.shared.get('title')
 
-# exported functions prefixed with 'client_' are callable by our client code using `Server.call`
-exports.client_incr = ->
-	log 'hello world!' # write to the plugin's log
-	Db.shared.modify 'counter', (v) -> v+1
+exports.onInstall = (config) !->
+	log 'install', JSON.stringify(config)
+	if config?
+		onConfig config, true # new
 
-exports.client_getTime = (cb) ->
-	cb.reply new Date()+""
+exports.onConfig = onConfig = (config, isNew) !->
+	log 'config', JSON.stringify(config)
+	if config.type is 'planner' # create plan
+		writePlanner(config, isNew)
+	else
+		writeEvent(config, isNew)
+		# TODO: set/update reminder
 
-exports.onHttp = (request) ->
-	# special entrypoint for the Http API: called whenever a request is made to our plugin's inbound URL
-	Db.shared.set 'http', request.data
-	request.respond 200, "Thanks for your input\n"
+exports.client_attendance = (value) !->
+	if value is 0
+		Db.shared.remove 'attendance', Plugin.userId()
+	else if value in [1, 2, 3] # going, maybe, notgoing
+		Db.shared.set 'attendance', Plugin.userId(), value
 
-exports.client_fetchHn = ->
-	Http = require 'http'
-	Http.get
-		url: 'https://news.ycombinator.com'
-		name: 'hnResponse' # corresponds to exports.hnResponse below
+exports.client_setState = (optionId, state) !->
+	Db.shared.set 'answers', optionId, Plugin.userId(), 0|state
 
-exports.hnResponse = (data) !->
-	# called when the Http API has the result for the above request
-	
-	re = /<a href="(http[^"]+)">([^<]+)<\/a>/g
-	# regex to find urls/titles in html
+exports.client_pickDate = (optionId) !->
+	[date, time] = optionId.split('-')
+	answers = Db.shared.get 'answers'
+	mapping =
+		1: 1 # yes is going
+		2: 3 # no is notgoing
+		3: 2 # maybe is maybe
+	if date
+		# convert to an event
+		Db.shared.set 'plannerCreated', (Db.shared.get 'created')
+		Db.shared.set 'created', 0|(new Date()/1000) # update
+		Db.shared.set 'date', date
+		Db.shared.set 'time', time||0
+		Db.shared.set 'remind', 86400 # TODO: actually set reminder
+		Db.shared.set 'rsvp', true
+		if answers
+			for oId, usersChosen of answers
+				for userId, state of usersChosen when +state > 0
+					Db.shared.set 'attendance', +userId, mapping[state]
+		# TODO: notify about this new event?
 
-	id = 1
-	while id < 5 and m = re.exec(data)
-		[all, url, title] = m
-		log 'hn headline', title, url
-		continue if url is 'http://www.ycombinator.com' # header link
-		Db.shared.set 'hn', id,
-			title: title
-			url: url
-		id++
 
-exports.onPhoto = (info) !->
-	# entrypoint when a photo is uploaded by the plugin
-	log 'onPhoto', JSON.stringify(info)
-	Db.shared.set 'photo', info.key
+exports.client_setNote = (optionId, note) !->
+	Db.shared.set 'notes', optionId, Plugin.userId(), note||null
 
-exports.client_event = !->
-	# send push event to all group members
-	Event = require 'event'
-	Event.create
-		text: "Test event"
-		# sender: Plugin.userId() # prevent push (but bubble) to sender
-		# for: [1, 2] # to only include group members 1 and 2
-		# for: [-3] # to exclude group member 3
-		# for: ['admin', 2] # to group admins and member 2
+writeEvent = (values, isNew = false) ->
+	event =
+		title: values.title||"(No title)"
+		details: values.details
+		date: values.date
+		time: values.time
+		remind: values.remind
+		rsvp: values.rsvp
+	if isNew
+		event.created = 0|(new Date()/1000)
+		event.by = Plugin.userId()
+		event.attendance = {}
+	Db.shared.merge event
 
+writePlanner = (values, isNew = false) ->
+	planner =
+		title: values.title||"(No title)"
+		details: values.details
+	if isNew
+		planner.created = 0|(new Date()/1000)
+		planner.by = Plugin.userId()
+		planner.options = {}
+		planner.answers = {}
+		planner.notes = {}
+	Db.shared.merge planner
+	log 'writing options', values.options
+	Db.shared.set 'options', (JSON.parse(values.options)||{})
