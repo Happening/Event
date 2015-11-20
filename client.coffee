@@ -576,16 +576,17 @@ renderPlannerSettings = !->
 		, (entry) -> entry.key()
 
 exports.renderSettings = !->
-	Form.input
-		name: 'title'
-		text: tr("Event name")
-		value: shared.get('title')
-
-	Form.condition (val) ->
-		tr("An event name is required") if !val.title
-
 	Form.box !->
 		Dom.style padding: '8px'
+
+		Form.input
+			name: 'title'
+			text: tr("Event name")
+			value: shared.get('title')
+
+		Form.condition (val) ->
+			tr("An event name is required") if !val.title
+
 		Form.text
 			name: 'details'
 			text: tr "Details about the event"
@@ -594,8 +595,6 @@ exports.renderSettings = !->
 			inScope: !->
 				Dom.style fontSize: '140%'
 				Dom.prop 'rows', 1
-
-	Form.sep()
 
 	showPlanner = Obs.create (if shared.get('date') then false else true)
 	if !Db.shared # only offer choice on install
@@ -607,7 +606,7 @@ exports.renderSettings = !->
 		Form.sep()
 
 	type = Form.hidden 'type', ''
-	Obs.observe !->
+	Dom.div !->
 		if !showPlanner.get()
 			# select date
 			renderEventSettings()
