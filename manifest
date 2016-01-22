@@ -1,5 +1,5 @@
 name: Event
-description: Announce and plan events
+description: Announce and plan events.
 icon: calendar3
+store: 1150
 api: 3
-type: msg

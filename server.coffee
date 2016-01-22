@@ -1,4 +1,5 @@
 App = require 'app'
+Comments = require 'comments'
 Db = require 'db'
 Event = require 'event'
 Timer = require 'timer'
@@ -49,9 +50,6 @@ timeToString = (time) ->
 		minutes = '0' + minutes if minutes.toString().length is 1
 		(0|(time/3600))+':'+minutes
 
-exports.getTitle = ->
-	Db.shared.get('title')
-
 exports.onInstall = (config) !->
 	log 'install', JSON.stringify(config)
 	if config?
@@ -59,10 +57,40 @@ exports.onInstall = (config) !->
 
 exports.onConfig = onConfig = (config, isNew) !->
 	log 'config', JSON.stringify(config)
-	if config.type is 'planner' # create plan
-		writePlanner(config, isNew)
+
+	event = details: config.details
+	if isNew
+		event.created = 0|(new Date()/1000)
+		event.by = App.userId()
+
+	planner = !Db.shared.get('date') and config.type isnt 'announce'
+	if planner # create plan
+		if isNew
+			event.options = {}
+			event.answers = {}
+			event.notes = {}
+		config.options ||= {}
+		Db.shared.set 'options', config.options
+
+		# see if we need to save or remove the duration
+		saveDuration = false
+		for date, entry of config.options
+			for k, v of entry
+				saveDuration = true # at leat one time option defined
+				break
+		Db.shared.set 'duration', (if saveDuration then +event.duration else null)
 	else
-		writeEvent(config, isNew)
+		event.date = +config.date
+		event.time = +config.time
+		event.duration = (if config.time is -1 then null else +config.duration)
+		event.remind = +config.remind
+		event.rsvp = config.rsvp
+		if isNew
+			event.attendance = {}
+
+	Db.shared.merge event
+
+	if !planner
 		setRemindTimer()
 
 exports.client_attendance = (value) !->
@@ -85,8 +113,8 @@ exports.client_pickDate = (optionId) !->
 		# convert to an event
 		Db.shared.set 'plannerCreated', (Db.shared.get 'created')
 		Db.shared.set 'created', 0|(new Date()/1000) # update
-		Db.shared.set 'date', date
-		Db.shared.set 'time', time||-1
+		Db.shared.set 'date', +date
+		Db.shared.set 'time', +(time||-1)
 		Db.shared.set 'remind', 86400
 		Db.shared.set 'rsvp', true
 		if answers
@@ -94,6 +122,11 @@ exports.client_pickDate = (optionId) !->
 				for userId, state of usersChosen when +state > 0
 					Db.shared.set 'attendance', +userId, mapping[state]
 		setRemindTimer()
+		whenText = (if time? then timeToString(time)+' ' else '')
+		whenText += dayToString(date)
+		Event.create
+			text: "Event date picked: #{whenText} (#{App.title()})"
+			sender: App.userId()
 
 
 exports.client_setNote = (optionId, note) !->
@@ -101,21 +134,29 @@ exports.client_setNote = (optionId, note) !->
 
 
 exports.reminder = !->
+	whenText = ''
 	date = Db.shared.get('date')
 	time = Db.shared.get('time')
-	title = Db.shared.get('title')
-	whenText = (if time>=0 then timeToString(time)+' ' else '')
+	if time>=0
+		append = ''
+		if duration = Db.shared.get('duration')
+			append = '-' + timeToString(time+duration)
+		whenText = timeToString(time) + append + ' '
+
 	whenText += dayToString(date)
 
 	log "event reminder (#{whenText})"
 	eventObj =
-		text: "Event reminder: #{title} (#{whenText})"
+		text: "Event reminder: #{App.title()} (#{whenText})"
 	include = []
 	if rsvp = Db.shared.get('rsvp')
 		for userId in App.userIds()
 			include.push userId unless Db.shared.get('attendance', userId) is 2
 		eventObj.for = include
-	Event.create eventObj unless rsvp and include.length is 0
+	unless rsvp and include.length is 0
+		Comments.post
+			s: "remind"
+		Event.create eventObj
 	Db.shared.set 'reminded', Math.round(App.time())
 
 setRemindTimer = !->
@@ -138,29 +179,39 @@ setRemindTimer = !->
 		log 'setting remindTimeout', remindTimeout
 		Timer.set remindTimeout, 'reminder'
 
-writeEvent = (values, isNew = false) ->
-	event =
-		title: values.title||"(No title)"
-		details: values.details
-		date: values.date
-		time: values.time
-		remind: values.remind
-		rsvp: values.rsvp
-	if isNew
-		event.created = 0|(new Date()/1000)
-		event.by = App.userId()
-		event.attendance = {}
-	Db.shared.merge event
+exports.onHttp = (request) !->
+	log 'request', JSON.stringify(request)
 
-writePlanner = (values, isNew = false) ->
-	planner =
-		title: values.title||"(No title)"
-		details: values.details
-	if isNew
-		planner.created = 0|(new Date()/1000)
-		planner.by = App.userId()
-		planner.options = {}
-		planner.answers = {}
-		planner.notes = {}
-	Db.shared.merge planner
-	Db.shared.set 'options', (JSON.parse(values.options)||{})
+	request.setHeader 'Content-Type', 'text/calendar; charset=utf-8'
+	request.setHeader 'Content-Disposition', 'attachment; filename=event.ics'
+
+	title = App.title()
+	details = Db.shared.get('details')
+	uid = App.appId()+'-'+title
+
+	date = new Date(Db.shared.get('date')*864e5)
+	year = date.getUTCFullYear()
+	month = date.getUTCMonth()+1
+	month = (if month<10 then '0' else '')+month
+	day = date.getUTCDate()
+	day = (if day<10 then '0' else '')+day
+
+	time = Db.shared.get('time')
+	duration = Db.shared.get('duration')||0
+
+	dateStringStart = year+''+month+''+day
+	dateStringEnd = year+''+month+''+day
+	if time>=0
+		for tm, idx in [time, time+duration]
+			hour = Math.floor((tm||0)/3600)
+			hour = (if hour<10 then '0' else '')+hour
+			minute = Math.floor((tm||0)%3600/60)
+			minute = (if minute<10 then '0' else '')+minute
+			seconds = Math.floor(tm%60)
+			seconds = (if seconds<10 then '0' else '')+seconds
+			if idx
+				dateStringEnd += 'T'+hour+''+minute+''+seconds
+			else
+				dateStringStart += 'T'+hour+''+minute+''+seconds
+
+	request.respond 200, "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:Happening Event\nBEGIN:VEVENT\nUID:#{uid}\nDTSTAMP;VALUE=DATE:#{dateStringStart}\nDTSTART;VALUE=DATE:#{dateStringStart}\nDTEND;VALUE=DATE:#{dateStringEnd}\nSUMMARY:#{title}\n"+(if details? then "DESCRIPTION:#{details}\n" else "")+"END:VEVENT\nEND:VCALENDAR"
