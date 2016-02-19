@@ -1,5 +1,5 @@
-name: Event
+name: Event Planner
 description: Announce and plan events.
 icon: calendar3
-store: 1150
+store: 1200
 api: 3

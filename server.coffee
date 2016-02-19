@@ -118,16 +118,16 @@ exports.client_pickDate = (optionId) !->
 		Db.shared.set 'remind', 86400
 		Db.shared.set 'rsvp', true
 		if answers
-			for oId, usersChosen of answers
+			for oId, usersChosen of answers when oId is optionId
 				for userId, state of usersChosen when +state > 0
 					Db.shared.set 'attendance', +userId, mapping[state]
 		setRemindTimer()
 		whenText = (if time? then timeToString(time)+' ' else '')
 		whenText += dayToString(date)
-		Event.create
-			text: "Event date picked: #{whenText} (#{App.title()})"
-			sender: App.userId()
-
+		Comments.post
+			s: "picked"
+			pushText: "Event date picked: #{whenText} (#{App.title()})"
+			path: '/'
 
 exports.client_setNote = (optionId, note) !->
 	Db.shared.set 'notes', optionId, App.userId(), note||null
@@ -148,6 +148,7 @@ exports.reminder = !->
 	log "event reminder (#{whenText})"
 	eventObj =
 		text: "Event reminder: #{App.title()} (#{whenText})"
+		path: '/?comments' # refer to the comments as event target
 	include = []
 	if rsvp = Db.shared.get('rsvp')
 		for userId in App.userIds()

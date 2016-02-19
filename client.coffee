@@ -45,6 +45,10 @@ exports.render = !->
 					tr("This event is happening in 1 day")
 				else if remind is 604800
 					tr("This event is happening in 1 week")
+			picked: (c) ->
+				whenText = (if (time = Db.shared.get('time'))? and time isnt -1 then Datepicker.timeToString(time)+' ' else '')
+				whenText += Datepicker.dayToString(Db.shared.get('date'))
+				"Event date picked: #{whenText} (#{App.title()})"
 
 renderEvent = !->
 	Ui.top !->
